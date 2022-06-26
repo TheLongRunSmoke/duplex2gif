@@ -3,7 +3,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps, ImageFilter
 
-parser = argparse.ArgumentParser(description="Convert ISO Duplex 120 stereos to gifs.")
+parser = argparse.ArgumentParser(description="Convert ISO (Super) Duplex 120 stereos to gifs.")
 parser.add_argument(
     '-p', '--path',
     type=lambda p: Path(p).absolute(),
@@ -96,7 +96,7 @@ def split(image):
     return raw.crop((0, 0, cut_point, height)), raw.crop((cut_point, 0, width, height))
 
 
-# Size for result GIF image. ISO Duplex (Super) 120 has 23.5x25mm frame.
+# Size for result GIF image. ISO (Super) Duplex 120 has 23.5x25mm frame.
 # 1000 height is typical maximum to autoplay GIF in social media.
 output_size = (940, 1000)
 
