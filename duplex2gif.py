@@ -1,7 +1,10 @@
 import argparse
+from math import ceil
 from pathlib import Path
 
-from PIL import Image, ImageOps, ImageFilter
+import cv2
+import numpy as np
+from PIL import Image
 
 parser = argparse.ArgumentParser(description="Convert ISO (Super) Duplex 120 stereos to gifs.")
 parser.add_argument(
@@ -31,6 +34,7 @@ def search_horizontal_border_size(image_data, height_range, width, threshold):
             value += image_data[x, y]
             if (value / max_value) > threshold:
                 return y
+    raise ValueError("Can't found border in given range.")
 
 
 def search_vertical_border_size(image_data, width_range, height, threshold):
@@ -52,36 +56,107 @@ def search_vertical_border_size(image_data, width_range, height, threshold):
             value += image_data[x, y]
             if (value / max_value) > threshold:
                 return x
+    raise ValueError("Can't found border in given range.")
 
 
 def search_borders(image):
-    """
-    Naively search black borders on image.
+    cv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    mask = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
+    width, height = image.size
+    scale = ceil(max(width, height) / 1000)
+    mask = cv2.resize(mask, (int(width / scale), int(height / scale)))
+    mask = 255 - mask
 
-    :param image: left or right half of original image.
-    :return: cropping coordinates to remove black borders.
-    """
-    w, h = image.size
-    # Search process params.
-    threshold = 0.20  # Minimal percent of white pixels in row or column to determinate as image area.
-    blur_size = 50  # Blur size to remove any small details.
-    # Create single-bit mask for a border search.
-    mask = ImageOps.autocontrast(  # Make equalized and blurred image high contrast.
-        ImageOps.equalize(  # Equalize blurred image to make it normally bright.
-            image.filter(  # Blur image to remove any small details.
-                ImageFilter.GaussianBlur(radius=blur_size / 2)
-            )
-        ),
-        cutoff=(20, 50)) \
-        .convert(mode='1')  # Convert to a single-bit black and white.
-    # Read pixels.
-    px = mask.load()
-    # Search all four borders. Clip for blurring.
-    border_left = search_vertical_border_size(px, range(int(w / 2)), h, threshold) + blur_size
-    border_top = search_horizontal_border_size(px, range(int(h / 2)), w, threshold) + blur_size
-    border_right = search_vertical_border_size(px, range(w - 1, int(w / 2), -1), h, threshold) - blur_size
-    border_bottom = search_horizontal_border_size(px, range(h - 1, int(h / 2), -1), w, threshold) - blur_size
-    return border_left, border_top, border_right, border_bottom
+    # mask = cv2.mask.filter()
+
+    # do adaptive threshold on gray image
+    # create a CLAHE object (Arguments are optional).
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    mask = clahe.apply(mask)
+
+    # mask = cv2.equalizeHist(mask)
+    # mask = cv2.threshold(mask, 64, 255, cv2.THRESH_BINARY)[1]
+    thresh = cv2.adaptiveThreshold(mask, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 17, 1)
+    thresh = 255 - mask
+
+    # apply morphology
+    kernel = np.ones((3, 3), np.uint8)
+    morph = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
+
+    # separate horizontal and vertical lines to filter out spots outside the rectangle
+    kernel = np.ones((9, 3), np.uint8)
+    vert = cv2.morphologyEx(morph, cv2.MORPH_CLOSE, kernel)
+    kernel = np.ones((3, 9), np.uint8)
+    horiz = cv2.morphologyEx(morph, cv2.MORPH_CLOSE, kernel)
+
+    # combine
+    rect = cv2.add(horiz, vert)
+
+    # thin
+    kernel = np.ones((7, 7), np.uint8)
+    rect = cv2.morphologyEx(rect, cv2.MORPH_ERODE, kernel)
+    # mask = cv2.erode(mask, kernel, iterations=10)
+    # mask = cv2.dilate(mask, kernel, iterations=10)
+
+    # get largest contour
+    contours, _ = cv2.findContours(rect, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours = filter(lambda cnt: cv2.contourArea(cnt) > 200, contours)
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+    x, y, w, h = cv2.boundingRect(np.concatenate(contours[0:min(3, len(contours))]))
+    x *= scale
+    y *= scale
+    w *= scale
+    h *= scale
+    cv2.rectangle(cv_image, (x, y), (x + w, y + h), (255, 0, 0), 10)
+
+    for c in contours:
+        x, y, w, h = cv2.boundingRect(c)
+        x *= scale
+        y *= scale
+        w *= scale
+        h *= scale
+        cv2.rectangle(cv_image, (x, y), (x + w, y + h), (36, 255, 12), 3)
+
+    # get rotated rectangle from contour
+    # rot_rect = cv2.minAreaRect(big_contour)
+    # box = cv2.boxPoints(rot_rect)
+    # box = np.int0(box)
+
+    # draw rotated rectangle on copy of img
+    # cv_image = cv2.drawContours(cv_image, [box], 0, (0, 0, 255), 2)
+
+    # # get rotated rectangle from contour
+    # rot_rect = cv2.minAreaRect(big_contour)
+    # box = cv2.boxPoints(rot_rect)
+    # box = np.int0(box)
+    # # # draw rotated rectangle on img
+    # cv2.drawContours(cv_image, [box], 0, (0, 0, 255), 2)
+
+    # mask = cv2.GaussianBlur(mask, (31, 31), 0)
+    #
+    # cv2.imshow('sobel', cv2.resize(grad, (int(width / 4), int(height / 4))))
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
+    # mask = cv2.Canny(mask, 100, 200)
+    # mask = cv2.threshold(mask, 64, 255, cv2.THRESH_BINARY)[1]
+    # mask = cv2.Canny(mask, 100, 200)
+    # mask = cv2.dilate(mask, np.ones((2, 2), np.uint8), iterations=2)
+    # mask = cv2.bilateralFilter(mask, 15, 80, 80)
+    # Find contours
+    # contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    # for cntr in contours:
+    #     x, y, w, h = cv2.boundingRect(cntr)
+    #     cv2.rectangle(cv_image, (x, y), (x + w, y + h), (36, 255, 12), 2)
+
+    # x, y, w, h = cv2.boundingRect(max(contours, key=lambda c: cv2.arcLength(c, True)))
+
+    cv2.imshow('mask', rect)
+    cv2.imshow('result', cv2.resize(cv_image, (int(width / 4), int(height / 4))))
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+    return x, y, x + w, y + h  # border_left, border_top, border_right, border_bottom
 
 
 def split(image):
@@ -103,7 +178,7 @@ output_size = (940, 1000)
 # Get all jpg files in directory.
 for file in Path(args.path).glob('*.jpg'):
     print('Process: %s ...' % file)
-    with Image.open(file) as raw:
+    with Image.open(file).convert(mode='RGB') as raw:
         # Part image in two halves.
         left, right = split(raw)
         # Search borders on left image.
@@ -131,5 +206,6 @@ for file in Path(args.path).glob('*.jpg'):
         loop=0)  # Infinite loop.
     # Tel user that we done with this image.
     print('Process: %s - OK' % file)
+    # break
 
 print('Ready!')
