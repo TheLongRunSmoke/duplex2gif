@@ -2,21 +2,21 @@
 
 ## What it is?
 
-This take scans of stereo pairs from [ISO Duplex 120](http://camera-wiki.org/wiki/Duplex_120) or [ISO Super Duplex 120](http://camera-wiki.org/wiki/Super_Duplex_120) and covert it to an animated GIF.
+This take scans of stereo pairs from [ISO Duplex 120](http://camera-wiki.org/wiki/Duplex_120) or [ISO Super Duplex 120](http://camera-wiki.org/wiki/Super_Duplex_120) and convert it to an animated GIF.
 
-All cropping and fitting process done automatically.
+All cropping process done automatically, just keep borders black.
 
 Camera:
 ![ISO Duplex Super 120](https://user-images.githubusercontent.com/5612507/175808901-55e88b37-06a4-4798-9cb5-5bff5f6a7eba.png)
 
-What film look like. I try with negative first.
+What film look like:
 ![Film](https://user-images.githubusercontent.com/5612507/175809114-9c767728-e639-4894-be38-0091f52ad599.jpg)
 
 Scan:
 ![Scan](https://user-images.githubusercontent.com/5612507/175808760-da9d27ac-8b00-4571-86d4-9b16a6e2261e.jpg)
 
 Resulting GIF:
-![GIF](https://user-images.githubusercontent.com/5612507/175808758-892bb597-c4c8-445d-a7ab-82cef0621843.gif)
+![GIF](https://user-images.githubusercontent.com/5612507/176485997-4e561ff3-61fb-4b87-b70d-a868b25db0f1.gif)
 
 ## How to use?
 
@@ -42,7 +42,8 @@ Resulting GIF:
    
 ## TODO
 
-- [x] Basic cropping and merging. 
-- [x] Check on B&W film.
-- [ ] Check on color film.
-- [ ] Add process params to CLI.
+- [x] Basic cropping and merging
+- [x] Check on B&W film
+- [x] Implement more robust cropping algorithm
+- [ ] Check on color film
+- [ ] Add process params to CLI

@@ -1,7 +1,10 @@
 import argparse
+from math import ceil
 from pathlib import Path
 
-from PIL import Image, ImageOps, ImageFilter
+import cv2
+import numpy as np
+from PIL import Image
 
 parser = argparse.ArgumentParser(description="Convert ISO (Super) Duplex 120 stereos to gifs.")
 parser.add_argument(
@@ -12,76 +15,64 @@ parser.add_argument(
 args = parser.parse_args()
 
 
-def search_horizontal_border_size(image_data, height_range, width, threshold):
-    """
-    Search border edge on top or bottom side of image.
-
-    :param image_data: image as PIL.PixelAccess.
-    :param height_range: range where to search for border.
-    :param width: image_data width.
-    :param threshold: 0.0..1.0, percent of white pixels in row to determinate as image area.
-    :return: Row number where border end.
-    """
-    # PixelAccess 8-bit, but mask 1-bit. All pixels 0 or 255.
-    max_value = width * 255
-    # Iterate through range, until find row with more white pixels than threshold allow.
-    for y in height_range:
-        value = 0
-        for x in range(width):
-            value += image_data[x, y]
-            if (value / max_value) > threshold:
-                return y
-
-
-def search_vertical_border_size(image_data, width_range, height, threshold):
-    """
-    Search border edge on left or right side of image.
-
-    :param image_data: image as PIL.PixelAccess.
-    :param width_range: range where to search for border.
-    :param height: image_data height.
-    :param threshold: 0.0..1.0, percent of white pixels in column to determinate as image area.
-    :return: Column number where border end.
-    """
-    # PixelAccess 8-bit, but mask 1-bit. All pixels 0 or 255.
-    max_value = height * 255
-    # Iterate through range, until find column with more white pixels than threshold allow.
-    for x in width_range:
-        value = 0
-        for y in range(height):
-            value += image_data[x, y]
-            if (value / max_value) > threshold:
-                return x
-
-
 def search_borders(image):
     """
-    Naively search black borders on image.
 
-    :param image: left or right half of original image.
-    :return: cropping coordinates to remove black borders.
+    :param image: half of initial stereo pair.
+    :return: top left corner x and y, width and height.
     """
-    w, h = image.size
-    # Search process params.
-    threshold = 0.20  # Minimal percent of white pixels in row or column to determinate as image area.
-    blur_size = 50  # Blur size to remove any small details.
-    # Create single-bit mask for a border search.
-    mask = ImageOps.autocontrast(  # Make equalized and blurred image high contrast.
-        ImageOps.equalize(  # Equalize blurred image to make it normally bright.
-            image.filter(  # Blur image to remove any small details.
-                ImageFilter.GaussianBlur(radius=blur_size / 2)
-            )
-        ),
-        cutoff=(20, 50)) \
-        .convert(mode='1')  # Convert to a single-bit black and white.
-    # Read pixels.
-    px = mask.load()
-    # Search all four borders. Clip for blurring.
-    border_left = search_vertical_border_size(px, range(int(w / 2)), h, threshold) + blur_size
-    border_top = search_horizontal_border_size(px, range(int(h / 2)), w, threshold) + blur_size
-    border_right = search_vertical_border_size(px, range(w - 1, int(w / 2), -1), h, threshold) - blur_size
-    border_bottom = search_horizontal_border_size(px, range(h - 1, int(h / 2), -1), w, threshold) - blur_size
-    return border_left, border_top, border_right, border_bottom
+    # Convert to grayscale OpenCV image.
+    mask = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+
+    # Speed up process by resize image to be smaller than 1000px in any direction.
+    width, height = image.size
+    scale = ceil(max(width, height) / 1000)
+    mask = cv2.resize(mask, (int(width / scale), int(height / scale)))
+
+    # Black pads to prevent any edge effects in follow operations.
+    pad = 50
+    mask = cv2.copyMakeBorder(mask, pad, pad, pad, pad, cv2.BORDER_CONSTANT, None, value=0)
+
+    # Apply morphology to remove small features. Blur...kind of.
+    kernel = np.ones((3, 3), np.uint8)
+    morph = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
+
+    # Separate horizontal and vertical lines to filter out spots.
+    kernel = np.ones((12, 3), np.uint8)
+    vert = cv2.morphologyEx(morph, cv2.MORPH_CLOSE, kernel)
+    kernel = np.ones((3, 12), np.uint8)
+    horiz = cv2.morphologyEx(morph, cv2.MORPH_CLOSE, kernel)
+
+    # Combine
+    rect = cv2.add(horiz, vert)
+
+    # Left frame has a key feature about 3 mm height, that must not be selected.
+    # Morphology with large enough kernel help.
+    kernel = np.ones((121, 121), np.uint8)
+    rect = cv2.morphologyEx(rect, cv2.MORPH_ERODE, kernel)
+    rect = cv2.morphologyEx(rect, cv2.MORPH_DILATE, kernel)
+
+    # Frame border typically rough, so trim it slightly inward.
+    # Give better result than trimming or scaling bounding box.
+    kernel = np.ones((17, 17), np.uint8)
+    rect = cv2.morphologyEx(rect, cv2.MORPH_ERODE, kernel)
+
+    # Convert to binary.
+    rect = cv2.threshold(rect, 32, 255, cv2.THRESH_BINARY)[1]
+
+    # Crop pads added in the beginning.
+    rect = rect[pad:pad + width, pad:pad + height]
+
+    # Find rectangles and sort by area, largest first.
+    contours, _ = cv2.findContours(rect, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+    # Take up to 5 largest contours, find its smallest bounding.
+    x, y, w, h = cv2.boundingRect(np.concatenate(contours[0:min(5, len(contours))]))
+
+    # Unscale results.
+    return x * scale, y * scale, w * scale, h * scale
 
 
 def split(image):
@@ -93,7 +84,17 @@ def split(image):
     """
     width, height = image.size
     cut_point = int(width / 2)
-    return raw.crop((0, 0, cut_point, height)), raw.crop((cut_point, 0, width, height))
+    return image.crop((0, 0, cut_point, height)), image.crop((cut_point, 0, width, height))
+
+
+def fps_as_duration(fps):
+    """
+    Convert frames per second to frame duration.
+
+    :param fps: frames per second. Only ints supported.
+    :return: frame duration in milliseconds.
+    """
+    return int(1 / int(fps) * 1000)
 
 
 # Size for result GIF image. ISO (Super) Duplex 120 has 23.5x25mm frame.
@@ -101,35 +102,34 @@ def split(image):
 output_size = (940, 1000)
 
 # Get all jpg files in directory.
-for file in Path(args.path).glob('*.jpg'):
-    print('Process: %s ...' % file)
-    with Image.open(file) as raw:
+for path in Path(args.path).glob('*.jpg'):
+    print('Process: %s ...' % path)
+    with Image.open(path).convert(mode='RGB') as raw:
         # Part image in two halves.
         left, right = split(raw)
         # Search borders on left image.
-        l_bl, l_bt, l_br, l_bb = search_borders(left)
+        left_x, left_y, left_width, left_height = search_borders(left)
         # Crop and resize for output.
         left = left.crop(
-            [l_bl, l_bt, l_br, l_bb]) \
+            [left_x, left_y, left_x + left_width, left_y + left_height]) \
             .resize(output_size, resample=Image.Resampling.LANCZOS)
         # Search borders on right image. Only top and left will be used.
-        r_bl, r_bt, _, _ = search_borders(right)
-        r_width, r_height = right.size
+        right_x, right_y, _, _ = search_borders(right)
         # Crop right image to be exactly the same size as left image, and resize for output.
         right = right.crop(
-            [r_bl, l_bt, r_bl + (l_br - l_bl), l_bt + (l_bb - l_bt)]) \
+            [right_x, right_y, right_x + left_width, right_y + left_height]) \
             .resize(output_size, resample=Image.Resampling.LANCZOS)
     # Save as GIF
     left.save(
         format='GIF',
-        fp=Path(file).with_suffix('.gif'),  # Use original file name, with new extension.
+        fp=Path(path).with_suffix('.gif'),  # Use original file name, with new extension.
         save_all=True,  # Save appended images.
         append_images=[right],  # Add right image as second frame.
         optimize=True,  # Optimize pallet if it can be done.
         disposal=1,  # Use first frame as background. This prevent ripping on loop.
-        duration=int(1 / 10 * 1000),  # 10 fps.
+        duration=fps_as_duration(6),
         loop=0)  # Infinite loop.
     # Tel user that we done with this image.
-    print('Process: %s - OK' % file)
+    print('Process: %s - OK' % path)
 
 print('Ready!')
